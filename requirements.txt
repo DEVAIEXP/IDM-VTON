@@ -21,3 +21,4 @@ fvcore
 cloudpickle
 omegaconf
 pycocotools
+gradio==4.28.2
