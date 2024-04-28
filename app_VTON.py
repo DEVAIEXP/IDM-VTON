@@ -38,7 +38,7 @@ vae_model_id = 'madebyollin/sdxl-vae-fp16-fix'
 
 dtypeQuantize = dtype
 
-if(load_mode == '8bit'):
+if(load_mode in ('4bit','8bit')):
     dtypeQuantize = torch.float8_e4m3fn
 
 ENABLE_CPU_OFFLOAD = args.lowvram
@@ -135,8 +135,8 @@ def start_tryon(dict,garm_img,garment_des,is_checked,is_checked_crop,denoise_ste
     elif ENABLE_CPU_OFFLOAD:
         pipe.enable_model_cpu_offload()
 
-    if load_mode != '4bit' :
-        pipe.enable_xformers_memory_efficient_attention()    
+    #if load_mode != '4bit' :
+    #    pipe.enable_xformers_memory_efficient_attention()    
 
     garm_img= garm_img.convert("RGB").resize((768,1024))
     human_img_orig = dict["background"].convert("RGB")    
