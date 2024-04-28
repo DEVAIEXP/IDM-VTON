@@ -56,7 +56,10 @@ from diffusers.utils import (
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 
+from util.pipeline import torch_gc
 
+
+USE_PEFT_BACKEND = True
 
 if is_torch_xla_available():
     import torch_xla.core.xla_model as xm
@@ -564,7 +567,7 @@ class StableDiffusionXLInpaintPipeline(
                 the output of the pre-final layer will be used for computing the prompt embeddings.
         """
         device = device or self._execution_device
-
+        
         # set lora scale so that monkey patched LoRA
         # function of text encoder can correctly access it
         if lora_scale is not None and isinstance(self, StableDiffusionXLLoraLoaderMixin):
@@ -1294,6 +1297,8 @@ class StableDiffusionXLInpaintPipeline(
         pooled_prompt_embeds_c=None,
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
+        dtype: torch.dtype = torch.float32,
+        device: torch.device = torch.device('cuda'),
         **kwargs,
     ):
         r"""
@@ -1523,7 +1528,7 @@ class StableDiffusionXLInpaintPipeline(
         else:
             batch_size = prompt_embeds.shape[0]
 
-        device = self._execution_device
+        #device = self._execution_device
 
         # 3. Encode input prompt
         text_encoder_lora_scale = (
@@ -1550,6 +1555,10 @@ class StableDiffusionXLInpaintPipeline(
             lora_scale=text_encoder_lora_scale,
             clip_skip=self.clip_skip,
         )
+        #move encoders to cpu for free memory        
+        self.text_encoder.to('cpu')
+        self.text_encoder_2.to('cpu')
+        torch_gc()
 
         # 4. set timesteps
         def denoising_value_valid(dnv):
@@ -1609,7 +1618,7 @@ class StableDiffusionXLInpaintPipeline(
             num_channels_latents,
             height,
             width,
-            prompt_embeds.dtype,
+            dtype, #prompt_embeds.dtype,
             device,
             generator,
             latents,
@@ -1633,12 +1642,12 @@ class StableDiffusionXLInpaintPipeline(
             batch_size * num_images_per_prompt,
             height,
             width,
-            prompt_embeds.dtype,
+            dtype,
             device,
             generator,
             self.do_classifier_free_guidance,
         )
-        pose_img = pose_img.to(device=device, dtype=prompt_embeds.dtype)
+        pose_img = pose_img.to(device=device, dtype=dtype)
 
         pose_img = self.vae.encode(pose_img).latent_dist.sample()
         pose_img = pose_img * self.vae.config.scaling_factor
@@ -1719,9 +1728,12 @@ class StableDiffusionXLInpaintPipeline(
                 ip_adapter_image, device, batch_size * num_images_per_prompt
             )
 
-            #project outside for loop
-            image_embeds = self.unet.encoder_hid_proj(image_embeds).to(prompt_embeds.dtype)
-
+        #put unet on same device
+        self.unet.to(device)
+        #image_embeds = image_embeds.to(dtype)
+        #project outside for loop
+        with torch.cuda.amp.autocast(dtype=dtype, enabled=True):
+            image_embeds = self.unet.encoder_hid_proj(image_embeds).to(dtype)
 
         # 11. Denoising loop
         num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
@@ -1758,109 +1770,111 @@ class StableDiffusionXLInpaintPipeline(
 
 
         self._num_timesteps = len(timesteps)
-        with self.progress_bar(total=num_inference_steps) as progress_bar:
-            for i, t in enumerate(timesteps):
-                if self.interrupt:
-                    continue
-                # expand the latents if we are doing classifier free guidance
-                latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
+        with torch.cuda.amp.autocast(dtype=dtype, enabled=True):
+            with self.progress_bar(total=num_inference_steps) as progress_bar:
+                for i, t in enumerate(timesteps):
+                    t.to(dtype)
+                    if self.interrupt:
+                        continue
+                    # expand the latents if we are doing classifier free guidance
+                    latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
 
-                # concat latents, mask, masked_image_latents in the channel dimension
-                latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
-
-
-                # bsz = mask.shape[0]
-                if num_channels_unet == 13:
-                    latent_model_input = torch.cat([latent_model_input, mask, masked_image_latents,pose_img], dim=1)
-
-                # if num_channels_unet == 9:
-                #     latent_model_input = torch.cat([latent_model_input, mask, masked_image_latents], dim=1)
-
-                # predict the noise residual
-                added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
-                if ip_adapter_image is not None:
-                    added_cond_kwargs["image_embeds"] = image_embeds
-                # down,reference_features = self.UNet_Encoder(cloth,t, text_embeds_cloth,added_cond_kwargs= {"text_embeds": pooled_prompt_embeds_c, "time_ids": add_time_ids},return_dict=False)
-                down,reference_features = self.unet_encoder(cloth,t, text_embeds_cloth,return_dict=False)
-                # print(type(reference_features))
-                # print(reference_features)
-                reference_features = list(reference_features)
-                # print(len(reference_features))
-                # for elem in reference_features:
-                #     print(elem.shape)
-                # exit(1)
-                if self.do_classifier_free_guidance:
-                    reference_features = [torch.cat([torch.zeros_like(d), d]) for d in reference_features]
+                    # concat latents, mask, masked_image_latents in the channel dimension
+                    latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
 
-                noise_pred = self.unet(
-                    latent_model_input,
-                    t,
-                    encoder_hidden_states=prompt_embeds,
-                    timestep_cond=timestep_cond,
-                    cross_attention_kwargs=self.cross_attention_kwargs,
-                    added_cond_kwargs=added_cond_kwargs,
-                    return_dict=False,
-                    garment_features=reference_features,
-                )[0]
-                # noise_pred = self.unet(latent_model_input, t, 
-                #                             prompt_embeds,timestep_cond=timestep_cond,cross_attention_kwargs=self.cross_attention_kwargs,added_cond_kwargs=added_cond_kwargs,down_block_additional_attn=down ).sample
+                    # bsz = mask.shape[0]
+                    if num_channels_unet == 13:
+                        latent_model_input = torch.cat([latent_model_input, mask, masked_image_latents,pose_img], dim=1)
 
+                    # if num_channels_unet == 9:
+                    #     latent_model_input = torch.cat([latent_model_input, mask, masked_image_latents], dim=1)
 
-                # perform guidance
-                if self.do_classifier_free_guidance:
-                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
-
-                if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
-                    # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
-                    noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=self.guidance_rescale)
-
-                # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
-
-                if num_channels_unet == 4:
-                    init_latents_proper = image_latents
+                    # predict the noise residual
+                    added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
+                    if ip_adapter_image is not None:
+                        added_cond_kwargs["image_embeds"] = image_embeds
+                    # down,reference_features = self.UNet_Encoder(cloth,t, text_embeds_cloth,added_cond_kwargs= {"text_embeds": pooled_prompt_embeds_c, "time_ids": add_time_ids},return_dict=False)
+                    down,reference_features = self.unet_encoder(cloth,t, text_embeds_cloth,return_dict=False)
+                    # print(type(reference_features))
+                    # print(reference_features)
+                    reference_features = list(reference_features)
+                    # print(len(reference_features))
+                    # for elem in reference_features:
+                    #     print(elem.shape)
+                    # exit(1)
                     if self.do_classifier_free_guidance:
-                        init_mask, _ = mask.chunk(2)
-                    else:
-                        init_mask = mask
+                        reference_features = [torch.cat([torch.zeros_like(d), d]) for d in reference_features]
 
-                    if i < len(timesteps) - 1:
-                        noise_timestep = timesteps[i + 1]
-                        init_latents_proper = self.scheduler.add_noise(
-                            init_latents_proper, noise, torch.tensor([noise_timestep])
+
+                    noise_pred = self.unet(
+                        latent_model_input,
+                        t,
+                        encoder_hidden_states=prompt_embeds,
+                        timestep_cond=timestep_cond,
+                        cross_attention_kwargs=self.cross_attention_kwargs,
+                        added_cond_kwargs=added_cond_kwargs,
+                        return_dict=False,
+                        garment_features=reference_features,
+                    )[0]
+                    # noise_pred = self.unet(latent_model_input, t, 
+                    #                             prompt_embeds,timestep_cond=timestep_cond,cross_attention_kwargs=self.cross_attention_kwargs,added_cond_kwargs=added_cond_kwargs,down_block_additional_attn=down ).sample
+
+
+                    # perform guidance
+                    if self.do_classifier_free_guidance:
+                        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                        noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+                    if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
+                        # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
+                        noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=self.guidance_rescale)
+
+                    # compute the previous noisy sample x_t -> x_t-1
+                    latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
+
+                    if num_channels_unet == 4:
+                        init_latents_proper = image_latents
+                        if self.do_classifier_free_guidance:
+                            init_mask, _ = mask.chunk(2)
+                        else:
+                            init_mask = mask
+
+                        if i < len(timesteps) - 1:
+                            noise_timestep = timesteps[i + 1]
+                            init_latents_proper = self.scheduler.add_noise(
+                                init_latents_proper, noise, torch.tensor([noise_timestep])
+                            )
+
+                        latents = (1 - init_mask) * init_latents_proper + init_mask * latents
+
+                    if callback_on_step_end is not None:
+                        callback_kwargs = {}
+                        for k in callback_on_step_end_tensor_inputs:
+                            callback_kwargs[k] = locals()[k]
+                        callback_outputs = callback_on_step_end(self, i, t, callback_kwargs)
+
+                        latents = callback_outputs.pop("latents", latents)
+                        prompt_embeds = callback_outputs.pop("prompt_embeds", prompt_embeds)
+                        negative_prompt_embeds = callback_outputs.pop("negative_prompt_embeds", negative_prompt_embeds)
+                        add_text_embeds = callback_outputs.pop("add_text_embeds", add_text_embeds)
+                        negative_pooled_prompt_embeds = callback_outputs.pop(
+                            "negative_pooled_prompt_embeds", negative_pooled_prompt_embeds
                         )
+                        add_time_ids = callback_outputs.pop("add_time_ids", add_time_ids)
+                        add_neg_time_ids = callback_outputs.pop("add_neg_time_ids", add_neg_time_ids)
+                        mask = callback_outputs.pop("mask", mask)
+                        masked_image_latents = callback_outputs.pop("masked_image_latents", masked_image_latents)
 
-                    latents = (1 - init_mask) * init_latents_proper + init_mask * latents
+                    # call the callback, if provided
+                    if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
+                        progress_bar.update()
+                        if callback is not None and i % callback_steps == 0:
+                            step_idx = i // getattr(self.scheduler, "order", 1)
+                            callback(step_idx, t, latents)
 
-                if callback_on_step_end is not None:
-                    callback_kwargs = {}
-                    for k in callback_on_step_end_tensor_inputs:
-                        callback_kwargs[k] = locals()[k]
-                    callback_outputs = callback_on_step_end(self, i, t, callback_kwargs)
-
-                    latents = callback_outputs.pop("latents", latents)
-                    prompt_embeds = callback_outputs.pop("prompt_embeds", prompt_embeds)
-                    negative_prompt_embeds = callback_outputs.pop("negative_prompt_embeds", negative_prompt_embeds)
-                    add_text_embeds = callback_outputs.pop("add_text_embeds", add_text_embeds)
-                    negative_pooled_prompt_embeds = callback_outputs.pop(
-                        "negative_pooled_prompt_embeds", negative_pooled_prompt_embeds
-                    )
-                    add_time_ids = callback_outputs.pop("add_time_ids", add_time_ids)
-                    add_neg_time_ids = callback_outputs.pop("add_neg_time_ids", add_neg_time_ids)
-                    mask = callback_outputs.pop("mask", mask)
-                    masked_image_latents = callback_outputs.pop("masked_image_latents", masked_image_latents)
-
-                # call the callback, if provided
-                if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
-                    progress_bar.update()
-                    if callback is not None and i % callback_steps == 0:
-                        step_idx = i // getattr(self.scheduler, "order", 1)
-                        callback(step_idx, t, latents)
-
-                if XLA_AVAILABLE:
-                    xm.mark_step()
+                    if XLA_AVAILABLE:
+                        xm.mark_step()
 
         if not output_type == "latent":
             # make sure the VAE is in float32 mode, as it overflows in float16
@@ -1885,7 +1899,8 @@ class StableDiffusionXLInpaintPipeline(
             image = [self.image_processor.apply_overlay(mask_image, original_image, i, crops_coords) for i in image]
 
         # Offload all models
-        self.maybe_free_model_hooks()
+        if device.type=='cpu':
+            self.maybe_free_model_hooks()
 
         # if not return_dict:
         return (image,)
