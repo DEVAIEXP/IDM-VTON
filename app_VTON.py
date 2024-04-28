@@ -267,11 +267,12 @@ human_list_path = [os.path.join(example_path,"human",human) for human in human_l
 
 human_ex_list = []
 for ex_human in human_list_path:
-    ex_dict= {}
-    ex_dict['background'] = ex_human
-    ex_dict['layers'] = None
-    ex_dict['composite'] = None
-    human_ex_list.append(ex_dict)
+    if "Jensen" in ex_human or "sam1 (1)" in ex_human:
+        ex_dict = {}
+        ex_dict['background'] = ex_human
+        ex_dict['layers'] = None
+        ex_dict['composite'] = None
+        human_ex_list.append(ex_dict)
 
 image_blocks = gr.Blocks().queue()
 with image_blocks as demo:
@@ -287,7 +288,7 @@ with image_blocks as demo:
 
             example = gr.Examples(
                 inputs=imgs,
-                examples_per_page=10,
+                examples_per_page=2,
                 examples=human_ex_list
             )
 
