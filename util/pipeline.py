@@ -14,14 +14,14 @@ def torch_gc():
     gc.collect()
 
 def restart_cpu_offload(pipe, load_mode):
-    if load_mode != '4bit' :
-        pipe.disable_xformers_memory_efficient_attention()        
+    #if load_mode != '4bit' :
+    #    pipe.disable_xformers_memory_efficient_attention()        
     optionally_disable_offloading(pipe)    
     gc.collect()
     torch.cuda.empty_cache()
     pipe.enable_model_cpu_offload()    
-    if load_mode != '4bit' :
-        pipe.enable_xformers_memory_efficient_attention()  
+    #if load_mode != '4bit' :
+    #    pipe.enable_xformers_memory_efficient_attention()  
 
 def optionally_disable_offloading(_pipeline):
 

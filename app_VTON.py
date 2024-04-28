@@ -38,7 +38,7 @@ vae_model_id = 'madebyollin/sdxl-vae-fp16-fix'
 
 dtypeQuantize = dtype
 
-if(load_mode == '8bit'):
+if(load_mode in ('4bit','8bit')):
     dtypeQuantize = torch.float8_e4m3fn
 
 ENABLE_CPU_OFFLOAD = args.lowvram
