@@ -15,7 +15,7 @@ from typing import List
 import torch
 import os
 from transformers import AutoTokenizer
-#import spaces
+import spaces
 import numpy as np
 from utils_mask import get_mask_location
 from torchvision import transforms
@@ -121,7 +121,7 @@ pipe = TryonPipeline.from_pretrained(
 )
 pipe.unet_encoder = UNet_Encoder
 
-#@spaces.GPU
+@spaces.GPU
 def start_tryon(dict,garm_img,garment_des,is_checked,is_checked_crop,denoise_steps,seed):
     device = "cuda"
     

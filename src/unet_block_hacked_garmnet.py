@@ -17,7 +17,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
-
+import bitsandbytes as bnb
 from diffusers.utils import is_torch_version, logging
 from diffusers.utils.torch_utils import apply_freeu
 from diffusers.models.activations import get_activation
@@ -1252,7 +1252,7 @@ class DownBlock2D(nn.Module):
                 def create_custom_forward(module):
                     def custom_forward(*inputs):
                         return module(*inputs)
-
+ 
                     return custom_forward
 
                 if is_torch_version(">=", "1.11.0"):
@@ -1263,7 +1263,7 @@ class DownBlock2D(nn.Module):
                     hidden_states = torch.utils.checkpoint.checkpoint(
                         create_custom_forward(resnet), hidden_states, temb
                     )
-            else:
+            else:               
                 hidden_states = resnet(hidden_states, temb, scale=scale)
 
             output_states = output_states + (hidden_states,)
