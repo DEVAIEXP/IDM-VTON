@@ -51,7 +51,7 @@ pipe = None
 UNet_Encoder = None
 example_path = os.path.join(os.path.dirname(__file__), 'example')
 
-def start_tryon(dict,garm_img,garment_des,is_checked,is_checked_crop,denoise_steps,seed,number_of_images):
+def start_tryon(dict,garm_img,garment_des,is_checked,is_checked_crop,denoise_steps,is_randomize_seed,seed,number_of_images):
     global pipe, unet, UNet_Encoder, need_restart_cpu_offloading
 
     if pipe == None:
@@ -225,9 +225,11 @@ def start_tryon(dict,garm_img,garment_des,is_checked,is_checked_crop,denoise_ste
                     garm_tensor =  tensor_transfrom(garm_img).unsqueeze(0).to(device,dtype)
                     results = []
                     current_seed = seed
-                    for i in range(number_of_images):                        
-                        generator = torch.Generator(device).manual_seed(current_seed) if seed != -1 else None
-                        current_seed = seed + i
+                    for i in range(number_of_images):  
+                        if is_randomize_seed:
+                            current_seed = torch.randint(0, 2**32, size=(1,)).item()                        
+                        generator = torch.Generator(device).manual_seed(current_seed) if seed != -1 else None                     
+                        current_seed = current_seed + i
 
                         images = pipe(
                             prompt_embeds=prompt_embeds.to(device,dtype),
@@ -276,7 +278,7 @@ for ex_human in human_list_path:
 
 image_blocks = gr.Blocks().queue()
 with image_blocks as demo:
-    gr.Markdown("## V5 IDM-VTON 👕👔👚 improved by SECourses : 1-Click Installers Latest Version On : https://www.patreon.com/posts/103022942")
+    gr.Markdown("## V6 IDM-VTON 👕👔👚 improved by SECourses : 1-Click Installers Latest Version On : https://www.patreon.com/posts/103022942")
     gr.Markdown("Virtual Try-on with your image and garment image. Check out the [source codes](https://github.com/yisol/IDM-VTON) and the [model](https://huggingface.co/yisol/IDM-VTON)")
     with gr.Row():
         with gr.Column():
@@ -316,9 +318,10 @@ with image_blocks as demo:
                 try_button = gr.Button(value="Try-on")
                 denoise_steps = gr.Number(label="Denoising Steps", minimum=20, maximum=120, value=30, step=1)
                 seed = gr.Number(label="Seed", minimum=-1, maximum=2147483647, step=1, value=1)
+                is_randomize_seed = gr.Checkbox(label="Randomize seed for each generated image", value=True)  
                 number_of_images = gr.Number(label="Number Of Images To Generate (it will start from your input seed and increment by 1)", minimum=1, maximum=9999, value=1, step=1)
 
 
-    try_button.click(fn=start_tryon, inputs=[imgs, garm_img, prompt, is_checked, is_checked_crop, denoise_steps, seed, number_of_images], outputs=[image_gallery, masked_img], api_name='tryon')
+    try_button.click(fn=start_tryon, inputs=[imgs, garm_img, prompt, is_checked, is_checked_crop, denoise_steps,is_randomize_seed, seed, number_of_images], outputs=[image_gallery, masked_img], api_name='tryon')
 
 image_blocks.launch(inbrowser=True,share=args.share)
