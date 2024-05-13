@@ -51,7 +51,7 @@ pipe = None
 UNet_Encoder = None
 example_path = os.path.join(os.path.dirname(__file__), 'example')
 
-def start_tryon(dict,garm_img,garment_des,is_checked,is_checked_crop,denoise_steps,seed,number_of_images):
+def start_tryon(dict, garm_img, garment_des, category, is_checked, is_checked_crop, denoise_steps, is_randomize_seed, seed, number_of_images):
     global pipe, unet, UNet_Encoder, need_restart_cpu_offloading
 
     if pipe == None:
@@ -158,7 +158,7 @@ def start_tryon(dict,garm_img,garment_des,is_checked,is_checked_crop,denoise_ste
     if is_checked:
         keypoints = openpose_model(human_img.resize((384,512)))
         model_parse, _ = parsing_model(human_img.resize((384,512)))
-        mask, mask_gray = get_mask_location('hd', "upper_body", model_parse, keypoints)
+        mask, mask_gray = get_mask_location('hd', category, model_parse, keypoints)
         mask = mask.resize((768,1024))
     else:
         mask = pil_to_binary_mask(dict['layers'][0].convert("RGB").resize((768, 1024)))
@@ -225,9 +225,11 @@ def start_tryon(dict,garm_img,garment_des,is_checked,is_checked_crop,denoise_ste
                     garm_tensor =  tensor_transfrom(garm_img).unsqueeze(0).to(device,dtype)
                     results = []
                     current_seed = seed
-                    for i in range(number_of_images):                        
-                        generator = torch.Generator(device).manual_seed(current_seed) if seed != -1 else None
-                        current_seed = seed + i
+                    for i in range(number_of_images):  
+                        if is_randomize_seed:
+                            current_seed = torch.randint(0, 2**32, size=(1,)).item()                        
+                        generator = torch.Generator(device).manual_seed(current_seed) if seed != -1 else None                     
+                        current_seed = current_seed + i
 
                         images = pipe(
                             prompt_embeds=prompt_embeds.to(device,dtype),
@@ -267,27 +269,29 @@ human_list_path = [os.path.join(example_path,"human",human) for human in human_l
 
 human_ex_list = []
 for ex_human in human_list_path:
-    ex_dict= {}
-    ex_dict['background'] = ex_human
-    ex_dict['layers'] = None
-    ex_dict['composite'] = None
-    human_ex_list.append(ex_dict)
+    if "Jensen" in ex_human or "sam1 (1)" in ex_human:
+        ex_dict = {}
+        ex_dict['background'] = ex_human
+        ex_dict['layers'] = None
+        ex_dict['composite'] = None
+        human_ex_list.append(ex_dict)
 
 image_blocks = gr.Blocks().queue()
 with image_blocks as demo:
-    gr.Markdown("## V4 IDM-VTON 👕👔👚 improved by SECourses : 1-Click Installers Latest Version On : https://www.patreon.com/posts/103022942")
+    gr.Markdown("## V7 - IDM-VTON 👕👔👚 improved by SECourses : 1-Click Installers Latest Version On : https://www.patreon.com/posts/103022942")
     gr.Markdown("Virtual Try-on with your image and garment image. Check out the [source codes](https://github.com/yisol/IDM-VTON) and the [model](https://huggingface.co/yisol/IDM-VTON)")
     with gr.Row():
         with gr.Column():
             imgs = gr.ImageEditor(sources='upload', type="pil", label='Human. Mask with pen or use auto-masking', interactive=True)
             with gr.Row():
+                category = gr.Radio(choices=["upper_body", "lower_body", "dresses"], label="Select Garment Category", value="upper_body")
                 is_checked = gr.Checkbox(label="Yes", info="Use auto-generated mask (Takes 5 seconds)",value=True)
             with gr.Row():
                 is_checked_crop = gr.Checkbox(label="Yes", info="Use auto-crop & resizing",value=True)
 
             example = gr.Examples(
                 inputs=imgs,
-                examples_per_page=10,
+                examples_per_page=2,
                 examples=human_ex_list
             )
 
@@ -315,9 +319,10 @@ with image_blocks as demo:
                 try_button = gr.Button(value="Try-on")
                 denoise_steps = gr.Number(label="Denoising Steps", minimum=20, maximum=120, value=30, step=1)
                 seed = gr.Number(label="Seed", minimum=-1, maximum=2147483647, step=1, value=1)
+                is_randomize_seed = gr.Checkbox(label="Randomize seed for each generated image", value=True)  
                 number_of_images = gr.Number(label="Number Of Images To Generate (it will start from your input seed and increment by 1)", minimum=1, maximum=9999, value=1, step=1)
 
 
-    try_button.click(fn=start_tryon, inputs=[imgs, garm_img, prompt, is_checked, is_checked_crop, denoise_steps, seed, number_of_images], outputs=[image_gallery, masked_img], api_name='tryon')
+    try_button.click(fn=start_tryon, inputs=[imgs, garm_img, prompt, category, is_checked, is_checked_crop, denoise_steps, is_randomize_seed, seed, number_of_images], outputs=[image_gallery, masked_img],api_name='tryon')
 
 image_blocks.launch(inbrowser=True,share=args.share)
